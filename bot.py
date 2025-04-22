@@ -28,10 +28,9 @@ def is_valid_base58_key(key):
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "🛠️ *بوت تنظيف سولانا*\n\n"
-        "⚠️ *وضع المحاكاة*\n"
-        "هذا الإصدار يعرض فقط كيف سيعمل البوت\n\n"
-        "أرسل المفتاح الخاص (أو أي نص للمحاكاة):"
+        "🛠️ بوت تنظيف سولانا (وضع التجربة)\n\n"
+        "⚠️ هذا الإصدار يعمل في وضع المحاكاة فقط\n"
+        "أرسل المفتاح الخاص (Base58):"
     )
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -39,54 +38,58 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
 
     if user_id in user_states and user_states[user_id] == "awaiting_confirmation":
-        if text.lower() in ["yes", "نعم", "y"]:
-            await update.message.reply_text("⚙️ جاري محاكاة التنظيف...")
+        if text.lower() in ["yes", "نعم"]:
+            await update.message.reply_text("جاري محاكاة التنظيف...")
             await simulate_cleanup(update, WALLET_INFO[user_id])
         else:
-            await update.message.reply_text("❌ تم الإلغاء")
+            await update.message.reply_text("تم الإلغاء")
         user_states[user_id] = None
         return
 
-    if not text:
-        await update.message.reply_text("الرجاء إدخال المفتاح الخاص")
+    if not is_valid_base58_key(text):
+        await update.message.reply_text("❌ المفتاح غير صالح")
         return
 
     try:
-        # إنشاء محفظة تجريبية للمحاكاة
-        keypair = Keypair.generate()
+        decoded_key = base58.b58decode(text)
+        keypair = Keypair.from_secret_key(decoded_key[:32])
         WALLET_INFO[user_id] = keypair
         user_states[user_id] = "awaiting_confirmation"
-        
         await update.message.reply_text(
-            f"🔍 *نتائج المحاكاة*:\n"
-            f"- العنوان: {str(keypair.public_key)[:8]}...\n"
-            f"- الحسابات غير النشطة: 3\n"
-            f"- المتوقع استعادته: *0.006123 SOL*\n\n"
-            f"هل تريد المتابعة؟ (اكتب 'نعم' للموافقة)",
-            parse_mode="Markdown"
+            f"✅ تم التحقق من المحفظة\n"
+            f"العنوان: {str(keypair.public_key)[:8]}...\n\n"
+            f"اكتب 'نعم' لمحاكاة التنظيف"
         )
     except Exception as e:
-        logger.error(f"Error: {str(e)}")
-        await update.message.reply_text("❌ حدث خطأ في المحاكاة")
+        await update.message.reply_text(f"❌ خطأ: {str(e)}")
 
 async def simulate_cleanup(update: Update, keypair: Keypair):
     try:
-        # محاكاة عملية التنظيف
+        client = AsyncClient("https://api.mainnet-beta.solana.com", timeout=10)
+        pubkey = str(keypair.public_key)
+
+        resp = await client.get_token_accounts_by_owner(
+            pubkey,
+            TokenAccountOpts(program_id="TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA")
+        )
+
+        accounts = resp.value
+        reclaimed = len(accounts) * 0.00204096
+
         await update.message.reply_text(
-            "🎉 *تمت المحاكاة بنجاح!*\n\n"
-            "النتائج:\n"
-            "- الحسابات المنظفة: 3\n"
-            "- الرينت المستعاد: 0.006123 SOL\n"
-            "- رسوم المعاملة: 0.0001 SOL\n\n"
-            "⚠️ تذكر أن هذه محاكاة فقط",
-            parse_mode="Markdown"
+            f"🎉 محاكاة ناجحة!\n"
+            f"الحسابات المكتشفة: {len(accounts)}\n"
+            f"المتوقع استعادته: ~{reclaimed:.6f} SOL\n\n"
+            f"⚠️ ملاحظة: هذا إصدار تجريبي لا ينفذ معاملات حقيقية"
         )
     except Exception as e:
         await update.message.reply_text(f"❌ خطأ في المحاكاة: {str(e)}")
+    finally:
+        await client.close()
 
 if __name__ == '__main__':
     if not TOKEN:
-        raise ValueError("يجب تعيين متغير البيئة BOT_TOKEN")
+        raise ValueError("لم يتم تعيين TELEGRAM_BOT_TOKEN")
     
     app = ApplicationBuilder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
@@ -95,5 +98,5 @@ if __name__ == '__main__':
     scheduler = BackgroundScheduler()
     scheduler.start()
 
-    logger.info("Starting bot in simulation mode...")
+    logger.info("Starting bot (Simulation Mode)...")
     app.run_polling()
