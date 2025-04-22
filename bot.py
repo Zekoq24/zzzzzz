@@ -12,7 +12,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-TOKEN = os.getenv("BOT_TOKEN")  # تأكد من أنك وضعت BOT_TOKEN في بيئة ريندر
+TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")  # تأكد من أنك وضعت BOT_TOKEN في بيئة ريندر
 
 user_states = {}
 WALLET_INFO = {}
