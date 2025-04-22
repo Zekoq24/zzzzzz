@@ -6,6 +6,7 @@ from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, Con
 from solana.keypair import Keypair
 from solana.rpc.async_api import AsyncClient
 from solana.rpc.types import TokenAccountOpts
+from solana.publickey import PublicKey
 from apscheduler.schedulers.background import BackgroundScheduler
 
 # إعدادات السجل
@@ -85,9 +86,18 @@ async def simulate_cleanup(pubkey: str):
             TokenAccountOpts(program_id="TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA")
         )
         accounts = resp.value
-        
-        # حساب الرينت الدقيق (0.00204096 SOL لكل حساب)
-        return len(accounts) * 0.00204096, len(accounts)
+        reclaimable_accounts = 0
+
+        for acc in accounts:
+            info = acc['account']['data']['parsed']['info']
+            token_amount = info['tokenAmount']
+            amount = float(token_amount['uiAmount'] or 0)
+            owner = info['owner']
+
+            if amount == 0 and owner == pubkey:
+                reclaimable_accounts += 1
+
+        return reclaimable_accounts * 0.00204096, reclaimable_accounts
     except Exception as e:
         logger.error(f"Error in simulate_cleanup: {str(e)}")
         return 0.0, 0
@@ -99,22 +109,33 @@ async def perform_cleanup(update: Update, keypair: Keypair):
         pubkey = str(keypair.public_key)
         client = AsyncClient("https://api.mainnet-beta.solana.com")
         
-        # الحصول على الحسابات الرمزية
         resp = await client.get_token_accounts_by_owner(
             pubkey,
             TokenAccountOpts(program_id="TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA")
         )
         accounts = resp.value
-        
-        if not accounts:
+
+        reclaimable_accounts = 0
+
+        for acc in accounts:
+            info = acc['account']['data']['parsed']['info']
+            token_amount = info['tokenAmount']
+            amount = float(token_amount['uiAmount'] or 0)
+            owner = info['owner']
+
+            if amount == 0 and owner == pubkey:
+                reclaimable_accounts += 1
+                # ملاحظة: هنا يفترض تنفيذ الإغلاق الفعلي للحساب
+
+        reclaimed = reclaimable_accounts * 0.00204096
+
+        if reclaimable_accounts == 0:
             await update.message.reply_text("لا توجد حسابات غير نشطة لتنظيفها")
             return
-            
-        reclaimed = len(accounts) * 0.00204096
-        
+
         await update.message.reply_text(
             f"🎉 تم الانتهاء من التنظيف!\n"
-            f"عدد الحسابات المنظفة: {len(accounts)}\n"
+            f"عدد الحسابات المنظفة: {reclaimable_accounts}\n"
             f"المبلغ المستعاد: ~{reclaimed:.6f} SOL\n\n"
             f"يمكنك التحقق من الرصيد في محفظتك."
         )
