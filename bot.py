@@ -55,8 +55,9 @@ try:
     user_states[user_id] = "awaiting_confirmation"
 
     sol = await simulate_cleanup(pubkey)
-    await update.message.reply_text(
+        await update.message.reply_text(
         f"Checking wallet: {pubkey[:8]}...\nExpected SOL from cleanup: {sol:.4f} SOL\nDo you want to proceed? (yes/no)"
+    )
     )
         )
     except Exception as e:
