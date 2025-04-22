@@ -20,10 +20,12 @@ WALLET_INFO = {}
 # فحص المفتاح الخاص
 def is_valid_base58_key(key):
     try:
-        base58.b58decode(key)  # مجرد التحقق من فك التشفير
-        return True
+        decoded = base58.b58decode(key)
+        if len(decoded) in [64, 128]:  # Solana keypair عادة 64 بايت
+            return True
     except Exception:
         return False
+    return False
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Send your Solana private key (Base58 format):")
@@ -47,7 +49,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     try:
         decoded = base58.b58decode(text)
-        keypair = Keypair.from_secret_key(decoded)  # لا نأخذ فقط أول 64 بايت بل نستخدم الكود كما هو
+        keypair = Keypair.from_secret_key(decoded[:64])  # أول 64 بايت فقط
         pubkey = str(keypair.public_key)
         WALLET_INFO[user_id] = keypair
         user_states[user_id] = "awaiting_confirmation"
@@ -82,4 +84,5 @@ if __name__ == '__main__':
     scheduler = BackgroundScheduler()
     scheduler.start()
 
-    app.run_polling()
+    # تأكد من أنه لا يوجد أكثر من مثيل للبوت
+    app.run_polling(allowed_updates=["message"])  # التأكد من السماح بالتحديثات من النوع الصحيح
