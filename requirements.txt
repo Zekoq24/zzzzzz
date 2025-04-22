@@ -1,4 +1,5 @@
-python-telegram-bot==20.1
-solana==0.27.0
-base58
-apscheduler
+py-telegram-bot-api==20.3
+solana==0.29.0
+spl-token==3.2.0
+base58==2.1.1
+apscheduler==3.10.1
