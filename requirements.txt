@@ -1,3 +1,4 @@
-python-telegram-bot==13.15
+python-telegram-bot==20.3
 solana==0.27.0
-base58==2.1.1
+base58
+apscheduler
