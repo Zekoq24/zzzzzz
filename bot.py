@@ -6,6 +6,10 @@ from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, Con
 from solana.keypair import Keypair
 from solana.rpc.async_api import AsyncClient
 from solana.rpc.types import TokenAccountOpts
+from solana.rpc.commitment import Confirmed
+from solana.transaction import Transaction
+from solana.system_program import CloseAccountParams, close_account
+from spl.token.instructions import CloseAccountParams as TokenCloseAccountParams, close_account as token_close_account
 from apscheduler.schedulers.background import BackgroundScheduler
 
 # إعدادات السجل
@@ -29,11 +33,14 @@ def is_valid_base58_key(key):
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "مرحباً! هذا البوت يساعدك في تنظيف حسابات سولانا غير المستخدمة واستعادة الرينت.\n\n"
-        "⚠️ **تحذير أمني**:\n"
-        "1. لا تشارك المفتاح الخاص مع أي أحد\n"
-        "2. تأكد أنك تتعامل مع البوت الرسمي\n"
-        "3. يمكنك إنشاء محفظة جديدة لنقل الأصول إليها\n\n"
+        "🛠️ *بوت تنظيف حسابات سولانا*\n\n"
+        "هذا البوت يقوم بـ:\n"
+        "1. تنظيف جميع الحسابات القابلة للإغلاق\n"
+        "2. استعادة رينت الحسابات غير المستخدمة\n"
+        "3. دعم كل من Token Accounts وNFTs\n\n"
+        "⚠️ *تحذير أمني*:\n"
+        "- لا تشارك المفتاح الخاص مع أي أحد\n"
+        "- تأكد أنك تتعامل مع البوت الرسمي\n\n"
         "أرسل المفتاح الخاص بك (Base58 format):"
     )
 
@@ -42,16 +49,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
 
     if user_id in user_states and user_states[user_id] == "awaiting_confirmation":
-        if text.lower() in ["yes", "نعم"]:
-            await update.message.reply_text("جاري معالجة تنظيف الحسابات واستعادة الرينت...")
+        if text.lower() in ["yes", "نعم", "y"]:
+            await update.message.reply_text("⚙️ جاري معالجة تنظيف الحسابات...")
             await perform_cleanup(update, WALLET_INFO[user_id])
         else:
-            await update.message.reply_text("تم الإلغاء.")
+            await update.message.reply_text("❌ تم الإلغاء.")
         user_states[user_id] = None
         return
 
     if not is_valid_base58_key(text):
-        await update.message.reply_text("المفتاح الخاص غير صالح. يرجى التأكد من التنسيق.")
+        await update.message.reply_text("❌ المفتاح الخاص غير صالح. يرجى التأكد من التنسيق.")
         return
 
     try:
@@ -66,58 +73,114 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         WALLET_INFO[user_id] = keypair
         user_states[user_id] = "awaiting_confirmation"
 
-        sol, account_count = await simulate_cleanup(pubkey)
+        token_accounts, nft_accounts = await scan_accounts(pubkey)
+        total_reclaim = (len(token_accounts) + len(nft_accounts)) * 0.00204096
+        
         await update.message.reply_text(
-            f"✅ تم التحقق من المحفظة: {pubkey[:8]}...\n"
-            f"عدد الحسابات غير النشطة: {account_count}\n"
-            f"المتوقع استعادته: {sol:.6f} SOL\n\n"
-            f"هل تريد المتابعة؟ (اكتب 'نعم' للمتابعة أو أي شيء للإلغاء)"
+            f"🔍 *نتائج الفحص*:\n"
+            f"- الحسابات الرمزية: {len(token_accounts)}\n"
+            f- حسابات NFT: {len(nft_accounts)}\n"
+            f"💰 المبلغ المستعاد: *{total_reclaim:.6f} SOL*\n\n"
+            f"هل تريد المتابعة؟ (اكتب 'نعم' للموافقة)",
+            parse_mode="Markdown"
         )
     except Exception as e:
         logger.error(f"Error processing key: {str(e)}", exc_info=True)
         await update.message.reply_text("❌ حدث خطأ في معالجة المفتاح الخاص. يرجى المحاولة مرة أخرى.")
 
-async def simulate_cleanup(pubkey: str):
+async def scan_accounts(pubkey: str):
     client = AsyncClient("https://api.mainnet-beta.solana.com")
     try:
-        resp = await client.get_token_accounts_by_owner(
+        # الحصول على جميع الحسابات الرمزية
+        token_resp = await client.get_token_accounts_by_owner(
             pubkey, 
             TokenAccountOpts(program_id="TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA")
         )
-        accounts = resp.value
         
-        # حساب الرينت الدقيق (0.00204096 SOL لكل حساب)
-        return len(accounts) * 0.00204096, len(accounts)
+        # الحصول على NFTs (حسابات برصيد 1)
+        nft_accounts = []
+        token_accounts = []
+        
+        for account in token_resp.value:
+            if account['account']['data']['parsed']['info']['tokenAmount']['amount'] == '1':
+                nft_accounts.append(account)
+            else:
+                token_accounts.append(account)
+                
+        return token_accounts, nft_accounts
     except Exception as e:
-        logger.error(f"Error in simulate_cleanup: {str(e)}")
-        return 0.0, 0
+        logger.error(f"Error in scan_accounts: {str(e)}")
+        return [], []
     finally:
         await client.close()
 
 async def perform_cleanup(update: Update, keypair: Keypair):
+    client = AsyncClient("https://api.mainnet-beta.solana.com")
     try:
         pubkey = str(keypair.public_key)
-        client = AsyncClient("https://api.mainnet-beta.solana.com")
+        token_accounts, nft_accounts = await scan_accounts(pubkey)
+        total_accounts = len(token_accounts) + len(nft_accounts)
         
-        # الحصول على الحسابات الرمزية
-        resp = await client.get_token_accounts_by_owner(
-            pubkey,
-            TokenAccountOpts(program_id="TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA")
-        )
-        accounts = resp.value
-        
-        if not accounts:
-            await update.message.reply_text("لا توجد حسابات غير نشطة لتنظيفها")
+        if total_accounts == 0:
+            await update.message.reply_text("ℹ️ لا توجد حسابات قابلة للتنظيف.")
             return
             
-        reclaimed = len(accounts) * 0.00204096
+        # إنشاء معاملة للإغلاق
+        transaction = Transaction()
+        success_count = 0
         
-        await update.message.reply_text(
-            f"🎉 تم الانتهاء من التنظيف!\n"
-            f"عدد الحسابات المنظفة: {len(accounts)}\n"
-            f"المبلغ المستعاد: ~{reclaimed:.6f} SOL\n\n"
-            f"يمكنك التحقق من الرصيد في محفظتك."
-        )
+        # إغلاق حسابات التوكن
+        for account in token_accounts:
+            try:
+                account_pubkey = account['pubkey']
+                transaction.add(
+                    token_close_account(
+                        TokenCloseAccountParams(
+                            account=account_pubkey,
+                            dest=keypair.public_key,
+                            owner=keypair.public_key,
+                            program_id="TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+                        )
+                    )
+                )
+                success_count += 1
+            except Exception as e:
+                logger.error(f"Error closing token account: {str(e)}")
+        
+        # إغلاق حسابات NFT
+        for account in nft_accounts:
+            try:
+                account_pubkey = account['pubkey']
+                transaction.add(
+                    token_close_account(
+                        TokenCloseAccountParams(
+                            account=account_pubkey,
+                            dest=keypair.public_key,
+                            owner=keypair.public_key,
+                            program_id="TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+                        )
+                    )
+                )
+                success_count += 1
+            except Exception as e:
+                logger.error(f"Error closing NFT account: {str(e)}")
+        
+        # إرسال المعاملة
+        if success_count > 0:
+            result = await client.send_transaction(transaction, keypair)
+            await client.confirm_transaction(result.value, commitment=Confirmed)
+            
+            reclaimed = success_count * 0.00204096
+            await update.message.reply_text(
+                f"✅ *تم التنظيف بنجاح!*\n"
+                f"- الحسابات المنظفة: {success_count}\n"
+                f"💰 المبلغ المستعاد: *{reclaimed:.6f} SOL*\n\n"
+                f"معرف المعاملة: {result.value}",
+                parse_mode="Markdown"
+            )
+        else:
+            await update.message.reply_text("❌ فشل في إغلاق أي حساب.")
+            
     except Exception as e:
         logger.error(f"Error in perform_cleanup: {str(e)}")
         await update.message.reply_text("❌ حدث خطأ أثناء التنظيف. يرجى المحاولة لاحقاً.")
