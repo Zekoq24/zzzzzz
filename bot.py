@@ -44,21 +44,19 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if not is_valid_base58_key(text):
-    await update.message.reply_text("Invalid private key. Make sure it's in Base58 format.")
-    return
+        await update.message.reply_text("Invalid private key. Make sure it's in Base58 format.")
+        return
 
-try:
-    decoded = base58.b58decode(text)
-    keypair = Keypair.from_secret_key(decoded[:64])  # أول 64 بايت فقط
-    pubkey = str(keypair.public_key)
-    WALLET_INFO[user_id] = keypair
-    user_states[user_id] = "awaiting_confirmation"
+    try:
+        decoded = base58.b58decode(text)
+        keypair = Keypair.from_secret_key(decoded[:64])  # أول 64 بايت فقط
+        pubkey = str(keypair.public_key)
+        WALLET_INFO[user_id] = keypair
+        user_states[user_id] = "awaiting_confirmation"
 
-    sol = await simulate_cleanup(pubkey)
+        sol = await simulate_cleanup(pubkey)
         await update.message.reply_text(
-        f"Checking wallet: {pubkey[:8]}...\nExpected SOL from cleanup: {sol:.4f} SOL\nDo you want to proceed? (yes/no)"
-    )
-    )
+            f"Checking wallet: {pubkey[:8]}...\nExpected SOL from cleanup: {sol:.4f} SOL\nDo you want to proceed? (yes/no)"
         )
     except Exception as e:
         await update.message.reply_text(f"Error: {str(e)}")
