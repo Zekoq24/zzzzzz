@@ -12,7 +12,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")  # تأكد من أنك وضعت BOT_TOKEN في بيئة ريندر
+TOKEN = os.getenv("BOT_TOKEN")  # تأكد من أنك وضعت BOT_TOKEN في بيئة ريندر
 
 user_states = {}
 WALLET_INFO = {}
@@ -21,7 +21,7 @@ WALLET_INFO = {}
 def is_valid_base58_key(key):
     try:
         decoded = base58.b58decode(key)
-        if len(decoded) in [64, 128]:  # Solana keypair عادة 64 بايت
+        if len(decoded) == 64:  # Solana keypair عادة 64 بايت
             return True
     except Exception:
         return False
@@ -48,12 +48,19 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     try:
+        # فك التشفير للمفتاح الخاص والتحقق من طوله
         decoded = base58.b58decode(text)
-        keypair = Keypair.from_secret_key(decoded[:64])  # أول 64 بايت فقط
+        if len(decoded) != 64:  # تأكد أن طول المفتاح بعد فك التشفير هو 64 بايت
+            await update.message.reply_text("Invalid key length. Expected 64 bytes after decoding.")
+            return
+
+        # إنشاء Keypair من المفتاح السري بعد فك التشفير
+        keypair = Keypair.from_bytes(decoded)
         pubkey = str(keypair.public_key)
         WALLET_INFO[user_id] = keypair
         user_states[user_id] = "awaiting_confirmation"
 
+        # محاكاة الـ cleanup
         sol = await simulate_cleanup(pubkey)
         await update.message.reply_text(
             f"Checking wallet: {pubkey[:8]}...\nExpected SOL from cleanup: {sol:.4f} SOL\nDo you want to proceed? (yes/no)"
@@ -71,7 +78,6 @@ async def simulate_cleanup(pubkey: str) -> float:
 async def perform_cleanup(update: Update, keypair: Keypair):
     # ملاحظة: هنا المفروض يتم تنفيذ cleanup الفعلي (إغلاق الحسابات واستعادة الرينت)
     # حالياً مجرد محاكاة بدون تنفيذ حقيقي
-
     await update.message.reply_text("Cleanup complete. Rent reclaimed successfully.")
 
 if __name__ == '__main__':
@@ -84,5 +90,4 @@ if __name__ == '__main__':
     scheduler = BackgroundScheduler()
     scheduler.start()
 
-    # تأكد من أنه لا يوجد أكثر من مثيل للبوت
-    app.run_polling(allowed_updates=["message"])  # التأكد من السماح بالتحديثات من النوع الصحيح
+    app.run_polling()
