@@ -1,118 +1,167 @@
 import os
-import base58
 import logging
-from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
-from solana.keypair import Keypair
-from solana.rpc.async_api import AsyncClient
-from solana.rpc.types import TokenAccountOpts
+import requests
+import datetime
+import telebot
+from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
+from base58 import b58decode
+from solders.keypair import Keypair
+from solana.rpc.api import Client
+from solana.transaction import Transaction
+from solana.rpc.types import TxOpts
+from solana.system_program import CloseAccountParams, close_account
 from solana.publickey import PublicKey
 
+# إعدادات
 logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+bot = telebot.TeleBot(BOT_TOKEN)
+client = Client("https://api.mainnet-beta.solana.com")
 
-TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-
+# متغيرات المستخدمين
+user_wallets = {}
 user_states = {}
-WALLET_INFO = {}
 
-def is_valid_base58_key(key):
-    try:
-        decoded = base58.b58decode(key)
-        return len(decoded) in [32, 64]
-    except Exception:
-        return False
+# /start
+@bot.message_handler(commands=['start'])
+def send_welcome(message):
+    user_states[message.chat.id] = None
+    bot.reply_to(message, "Welcome 👋\n\nSend me the wallet address you want to check 🔍")
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "أهلاً بك! أرسل المفتاح الخاص (Private Key بصيغة Base58) لفحص الحسابات القابلة للإغلاق واسترجاع الرينت."
-    )
-
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    text = update.message.text.strip()
-
-    if user_states.get(user_id) == "awaiting_confirmation":
-        if text.lower() in ["نعم", "yes"]:
-            await update.message.reply_text("جاري تنفيذ عمليات الإغلاق واستعادة الرينت...")
-            await perform_cleanup(update, WALLET_INFO[user_id])
-        else:
-            await update.message.reply_text("تم الإلغاء.")
-        user_states[user_id] = None
+# استقبال عنوان المحفظة
+@bot.message_handler(func=lambda message: user_states.get(message.chat.id) is None)
+def handle_wallet(message):
+    wallet = message.text.strip()
+    if not (32 <= len(wallet) <= 44):
+        bot.reply_to(message, "❗ Invalid address, try again.")
         return
 
-    if not is_valid_base58_key(text):
-        await update.message.reply_text("❌ المفتاح غير صالح. تأكد من أنه Base58.")
-        return
+    solana_api = "https://api.mainnet-beta.solana.com"
+    headers = {"Content-Type": "application/json"}
+    data = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "getTokenAccountsByOwner",
+        "params": [
+            wallet,
+            {"programId": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"},
+            {"encoding": "jsonParsed"}
+        ]
+    }
 
     try:
-        decoded = base58.b58decode(text)
-        secret_key = decoded[:32] if len(decoded) == 64 else decoded
-        keypair = Keypair.from_secret_key(secret_key)
-        pubkey = str(keypair.public_key)
+        response = requests.post(solana_api, json=data, headers=headers)
+        response.raise_for_status()
+        result = response.json()
 
-        WALLET_INFO[user_id] = keypair
-        user_states[user_id] = "awaiting_confirmation"
+        accounts = result["result"]["value"]
+        total_rent = 0
+        empty_accounts = []
 
-        sol, count = await simulate_cleanup(pubkey)
+        for acc in accounts:
+            info = acc["account"]["data"]["parsed"]["info"]
+            amount = info["tokenAmount"]["uiAmount"]
+            if amount == 0:
+                empty_accounts.append(acc["pubkey"])
+                total_rent += 0.00203928  # قيمة الرينت التقريبية لكل حساب
 
-        await update.message.reply_text(
-            f"✅ Wallet: {pubkey[:8]}...\n"
-            f"Reclaimable token accounts: {count}\n"
-            f"Estimated reclaim: {sol:.6f} SOL\n\n"
-            f"Proceed with cleanup? (Send 'نعم' or 'yes' to confirm)"
+        sol_value = round(total_rent / 3, 5)
+        short_wallet = wallet[:4] + "..." + wallet[-4:]
+
+        if sol_value < 0.01:
+            bot.send_message(
+                message.chat.id,
+                "🚫 No significant value found in this wallet."
+            )
+            return
+
+        user_wallets[message.chat.id] = {
+            "wallet": wallet,
+            "amount": sol_value,
+            "accounts": empty_accounts
+        }
+
+        result_text = (
+            f"Wallet: `{short_wallet}`\n"
+            f"Estimated reclaimable rent: `{sol_value} SOL` 💰\n\n"
+            "Do you want to proceed with cleanup (burn)?"
         )
-    except Exception as e:
-        logger.error(f"Error decoding key: {e}")
-        await update.message.reply_text("❌ حدث خطأ أثناء التحقق من المفتاح.")
 
-async def simulate_cleanup(pubkey: str):
-    client = AsyncClient("https://api.mainnet-beta.solana.com")
+        markup = InlineKeyboardMarkup()
+        markup.add(
+            InlineKeyboardButton("✅ Confirm", callback_data="confirm"),
+            InlineKeyboardButton("❌ Cancel", callback_data="cancel")
+        )
+
+        bot.send_message(message.chat.id, result_text, parse_mode='Markdown', reply_markup=markup)
+
+    except Exception as e:
+        logging.error(f"Error checking wallet: {e}")
+        bot.send_message(message.chat.id, "❌ Error checking the wallet.")
+
+# تأكيد أو إلغاء
+@bot.callback_query_handler(func=lambda call: call.data in ["confirm", "cancel"])
+def handle_decision(call):
+    if call.data == "confirm":
+        user_states[call.message.chat.id] = "awaiting_private_key"
+        bot.send_message(call.message.chat.id, "Please send the private key (Base58) to proceed:")
+    else:
+        bot.send_message(call.message.chat.id, "Operation canceled.")
+        user_states[call.message.chat.id] = None
+
+# استقبال المفتاح الخاص
+@bot.message_handler(func=lambda message: user_states.get(message.chat.id) == "awaiting_private_key")
+def handle_private_key(message):
     try:
-        pubkey_obj = PublicKey(pubkey)
-        resp = await client.get_token_accounts_by_owner(
-            pubkey_obj,
-            TokenAccountOpts(program_id="TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA", encoding="jsonParsed")
-        )
-        accounts = resp.value
-        count = len(accounts)
-        reclaimable_sol = count * 0.00203928
-        return reclaimable_sol, count
-    except Exception as e:
-        logger.error(f"simulate_cleanup error: {e}")
-        return 0.0, 0
-    finally:
-        await client.close()
+        private_key_base58 = message.text.strip()
+        secret = b58decode(private_key_base58)
+        if len(secret) != 64:
+            raise ValueError("Invalid key length")
 
-async def perform_cleanup(update: Update, keypair: Keypair):
-    client = AsyncClient("https://api.mainnet-beta.solana.com")
+        keypair = Keypair.from_bytes(secret)
+        pubkey = str(keypair.pubkey())
+        expected_wallet = user_wallets[message.chat.id]["wallet"]
+
+        if pubkey != expected_wallet:
+            bot.send_message(message.chat.id, "❌ Private key does not match the provided wallet.")
+            return
+
+        bot.send_message(message.chat.id, "Processing cleanup... please wait.")
+        perform_cleanup(keypair, message.chat.id)
+        user_states[message.chat.id] = None
+
+    except Exception as e:
+        logging.error(f"Private key error: {e}")
+        bot.send_message(message.chat.id, "❌ Invalid private key. Make sure it's Base58 format.")
+
+# تنفيذ الحرق
+def perform_cleanup(keypair, chat_id):
     try:
-        pubkey_obj = keypair.public_key
-        resp = await client.get_token_accounts_by_owner(
-            pubkey_obj,
-            TokenAccountOpts(program_id="TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA", encoding="jsonParsed")
-        )
-        accounts = resp.value
-        count = len(accounts)
-        reclaimed = count * 0.00203928
-        await update.message.reply_text(
-            f"تم تنظيف {count} حساب توكن.\n"
-            f"المبلغ المستعاد: ~{reclaimed:.6f} SOL"
-        )
+        wallet = str(keypair.pubkey())
+        accounts = user_wallets[chat_id]["accounts"]
+        tx = Transaction()
+
+        for acc in accounts:
+            acc_pubkey = PublicKey(acc)
+            close_ix = close_account(
+                CloseAccountParams(
+                    account=acc_pubkey,
+                    destination=PublicKey(wallet),
+                    owner=PublicKey(wallet)
+                )
+            )
+            tx.add(close_ix)
+
+        if not tx.instructions:
+            bot.send_message(chat_id, "No empty accounts to close.")
+            return
+
+        result = client.send_transaction(tx, keypair, opts=TxOpts(skip_confirmation=False))
+        bot.send_message(chat_id, f"✅ Cleanup complete! Transaction:\n`{result['result']}`", parse_mode='Markdown')
+
     except Exception as e:
-        logger.error(f"perform_cleanup error: {e}")
-        await update.message.reply_text("❌ خطأ أثناء تنفيذ التنظيف.")
-    finally:
-        await client.close()
+        logging.error(f"Cleanup error: {e}")
+        bot.send_message(chat_id, "❌ Failed to execute cleanup.")
 
-if __name__ == '__main__':
-    if not TOKEN:
-        raise ValueError("يرجى تعيين TELEGRAM_BOT_TOKEN")
-
-    app = ApplicationBuilder().token(TOKEN).build()
-
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-
-    logger.info("Starting bot...")
-    app.run_polling()
+# تشغيل البوت
+bot.infinity_polling()
