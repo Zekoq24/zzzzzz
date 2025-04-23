@@ -1,6 +1,6 @@
 import os
 import telebot
-from solana_agentkit import SolanaAgent
+from solana_agentkit.core import SolanaAgent
 from solana_agentkit.tools import transfer_tokens, get_balance
 import base58
 
