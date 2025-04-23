@@ -8,14 +8,16 @@ import logging
 
 logging.basicConfig(level=logging.INFO)
 
-TELEGRAM_BOT_TOKEN = 'YOUR_BOT_TOKEN'  # هنا استخدمنا المتغير الجديد
-bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN)
+BOT_TOKEN = 'YOUR_BOT_TOKEN'
+bot = telebot.TeleBot(BOT_TOKEN)
 solana_client = Client("https://api.mainnet-beta.solana.com")
 
 user_states = {}
 user_wallets = {}
 
+# الحالة: انتظار تأكيد الحرق
 WAITING_CONFIRMATION = 'waiting_confirmation'
+# الحالة: انتظار المفتاح الخاص
 WAITING_PRIVATE_KEY = 'waiting_private_key'
 
 @bot.message_handler(commands=['start'])
