@@ -1,4 +1,4 @@
-pyTelegramBotAPI
-requests
+python-telegram-bot==20.7
+solana==0.30.1
 base58
-solders
+requests
