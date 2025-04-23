@@ -6,6 +6,7 @@ from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, Con
 from solana.keypair import Keypair
 from solana.rpc.async_api import AsyncClient
 from solana.rpc.types import TokenAccountOpts
+from solana.publickey import PublicKey
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -22,9 +23,16 @@ def is_valid_base58_key(key):
     except Exception:
         return False
 
+def is_valid_pubkey(key):
+    try:
+        pubkey = PublicKey(key)
+        return True
+    except Exception:
+        return False
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "أهلاً بك! أرسل المفتاح الخاص (Private Key بصيغة Base58) لفحص الحسابات القابلة للإغلاق واسترجاع الرينت."
+        "أهلاً بك! أرسل المفتاح الخاص (Base58) أو العنوان العام (Public Address) لفحص الحسابات القابلة للإغلاق واسترجاع الرينت."
     )
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -34,36 +42,58 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if user_states.get(user_id) == "awaiting_confirmation":
         if text.lower() in ["نعم", "yes"]:
             await update.message.reply_text("جاري تنفيذ عمليات الإغلاق واستعادة الرينت...")
-            await perform_cleanup(update, WALLET_INFO[user_id])
+            keypair_or_address = WALLET_INFO[user_id]
+            if isinstance(keypair_or_address, Keypair):
+                await perform_cleanup(update, keypair_or_address)
+            else:
+                await update.message.reply_text("❌ لا يمكن تنفيذ عمليات من عنوان فقط، أرسل المفتاح الخاص.")
         else:
             await update.message.reply_text("تم الإلغاء.")
         user_states[user_id] = None
         return
 
-    if not is_valid_base58_key(text):
-        await update.message.reply_text("❌ المفتاح غير صالح. تأكد من أنه Base58.")
-        return
+    # إذا مفتاح خاص
+    if is_valid_base58_key(text):
+        try:
+            decoded = base58.b58decode(text)
+            secret_key = decoded[:32] if len(decoded) == 64 else decoded
+            keypair = Keypair.from_secret_key(secret_key)
+            pubkey = str(keypair.public_key)
 
-    try:
-        decoded = base58.b58decode(text)
-        secret_key = decoded[:32] if len(decoded) == 64 else decoded
-        keypair = Keypair.from_secret_key(secret_key)
-        pubkey = str(keypair.public_key)
+            WALLET_INFO[user_id] = keypair
+            user_states[user_id] = "awaiting_confirmation"
 
-        WALLET_INFO[user_id] = keypair
-        user_states[user_id] = "awaiting_confirmation"
+            sol, count = await simulate_cleanup(pubkey)
+
+            await update.message.reply_text(
+                f"✅ Wallet: {pubkey[:8]}...\n"
+                f"Reclaimable token accounts: {count}\n"
+                f"Estimated reclaim: {sol:.6f} SOL\n\n"
+                f"Proceed with cleanup? (Send 'نعم' or 'yes' to confirm)"
+            )
+            return
+        except Exception as e:
+            logger.error(f"Error decoding key: {e}")
+            await update.message.reply_text("❌ خطأ أثناء التحقق من المفتاح.")
+            return
+
+    # إذا عنوان عام فقط
+    elif is_valid_pubkey(text):
+        pubkey = text
+        WALLET_INFO[user_id] = pubkey
+        user_states[user_id] = None  # لأنه لا يمكن تنفيذ cleanup بدون مفتاح خاص
 
         sol, count = await simulate_cleanup(pubkey)
 
         await update.message.reply_text(
             f"✅ Wallet: {pubkey[:8]}...\n"
             f"Reclaimable token accounts: {count}\n"
-            f"Estimated reclaim: {sol:.6f} SOL\n\n"
-            f"Proceed with cleanup? (Send 'نعم' or 'yes' to confirm)"
+            f"Estimated reclaim: {sol:.6f} SOL"
         )
-    except Exception as e:
-        logger.error(f"Error decoding key: {e}")
-        await update.message.reply_text("❌ حدث خطأ أثناء التحقق من المفتاح.")
+        return
+
+    else:
+        await update.message.reply_text("❌ هذا الإدخال غير صالح. أرسل المفتاح الخاص أو العنوان العام (Public Address).")
 
 async def simulate_cleanup(pubkey: str):
     client = AsyncClient("https://api.mainnet-beta.solana.com")
