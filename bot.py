@@ -6,19 +6,16 @@ from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, Con
 from solana.keypair import Keypair
 from solana.rpc.async_api import AsyncClient
 from solana.rpc.types import TokenAccountOpts
+from solana.publickey import PublicKey
 
-# إعداد اللوق
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# توكن البوت من متغير البيئة
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 
-# تخزين الحالة والمعلومات
 user_states = {}
 WALLET_INFO = {}
 
-# التحقق من صلاحية المفتاح
 def is_valid_base58_key(key):
     try:
         decoded = base58.b58decode(key)
@@ -26,13 +23,11 @@ def is_valid_base58_key(key):
     except Exception:
         return False
 
-# رسالة /start
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "أهلاً بك! أرسل المفتاح الخاص (Private Key بصيغة Base58) لفحص الحسابات القابلة للإغلاق واسترجاع الرينت."
     )
 
-# التعامل مع الرسائل
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     text = update.message.text.strip()
@@ -71,17 +66,17 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Error decoding key: {e}")
         await update.message.reply_text("❌ حدث خطأ أثناء التحقق من المفتاح.")
 
-# محاكاة التنظيف وحساب العائد
 async def simulate_cleanup(pubkey: str):
     client = AsyncClient("https://api.mainnet-beta.solana.com")
     try:
+        pubkey_obj = PublicKey(pubkey)
         resp = await client.get_token_accounts_by_owner(
-            pubkey,
+            pubkey_obj,
             TokenAccountOpts(program_id="TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA", encoding="jsonParsed")
         )
         accounts = resp.value
         count = len(accounts)
-        reclaimable_sol = count * 0.00203928  # قيمة الرينت لكل حساب
+        reclaimable_sol = count * 0.00203928
         return reclaimable_sol, count
     except Exception as e:
         logger.error(f"simulate_cleanup error: {e}")
@@ -89,13 +84,12 @@ async def simulate_cleanup(pubkey: str):
     finally:
         await client.close()
 
-# تنفيذ التنظيف الفعلي
 async def perform_cleanup(update: Update, keypair: Keypair):
     client = AsyncClient("https://api.mainnet-beta.solana.com")
     try:
-        pubkey = str(keypair.public_key)
+        pubkey_obj = keypair.public_key
         resp = await client.get_token_accounts_by_owner(
-            pubkey,
+            pubkey_obj,
             TokenAccountOpts(program_id="TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA", encoding="jsonParsed")
         )
         accounts = resp.value
@@ -111,10 +105,9 @@ async def perform_cleanup(update: Update, keypair: Keypair):
     finally:
         await client.close()
 
-# تشغيل البوت
 if __name__ == '__main__':
     if not TOKEN:
-        raise ValueError("يرجى تعيين TELEGRAM_BOT_TOKEN في متغيرات البيئة")
+        raise ValueError("يرجى تعيين TELEGRAM_BOT_TOKEN")
 
     app = ApplicationBuilder().token(TOKEN).build()
 
