@@ -1,4 +1,2 @@
 pyTelegramBotAPI
-solana
-base58
 solana-agentkit
