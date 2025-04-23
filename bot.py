@@ -6,7 +6,6 @@ from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, Con
 from solana.keypair import Keypair
 from solana.rpc.async_api import AsyncClient
 from solana.rpc.types import TokenAccountOpts
-from apscheduler.schedulers.background import BackgroundScheduler
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -58,7 +57,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         await update.message.reply_text(
             f"✅ Wallet: {pubkey[:8]}...\n"
-            f"Token Accounts: {count}\n"
+            f"Reclaimable token accounts: {count}\n"
             f"Estimated reclaim: {sol:.6f} SOL\n\n"
             f"Proceed with cleanup? (Send 'نعم' or 'yes' to confirm)"
         )
@@ -74,14 +73,7 @@ async def simulate_cleanup(pubkey: str):
             TokenAccountOpts(program_id="TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA", encoding="jsonParsed")
         )
         accounts = resp.value
-        count = 0
-
-        for acc in accounts:
-            try:
-                count += 1
-            except Exception:
-                continue
-
+        count = len(accounts)
         reclaimable_sol = count * 0.002
         return reclaimable_sol, count
     except Exception as e:
@@ -99,14 +91,7 @@ async def perform_cleanup(update: Update, keypair: Keypair):
             TokenAccountOpts(program_id="TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA", encoding="jsonParsed")
         )
         accounts = resp.value
-        count = 0
-
-        for acc in accounts:
-            try:
-                count += 1
-            except Exception:
-                continue
-
+        count = len(accounts)
         reclaimed = count * 0.002
         await update.message.reply_text(
             f"تم تنظيف {count} حساب توكن.\n"
@@ -126,9 +111,6 @@ if __name__ == '__main__':
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-
-    scheduler = BackgroundScheduler()
-    scheduler.start()
 
     logger.info("Starting bot...")
     app.run_polling()
