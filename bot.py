@@ -58,7 +58,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         await update.message.reply_text(
             f"✅ Wallet: {pubkey[:8]}...\n"
-            f"Reclaimable accounts: {count}\n"
+            f"Token Accounts: {count}\n"
             f"Estimated reclaim: {sol:.6f} SOL\n\n"
             f"Proceed with cleanup? (Send 'نعم' or 'yes' to confirm)"
         )
@@ -78,14 +78,11 @@ async def simulate_cleanup(pubkey: str):
 
         for acc in accounts:
             try:
-                info = acc["account"]["data"]["parsed"]["info"]
-                amount = info["tokenAmount"]["uiAmount"]
-                if float(amount) == 0:
-                    count += 1
+                count += 1
             except Exception:
                 continue
 
-        reclaimable_sol = count * 0.00203928
+        reclaimable_sol = count * 0.002
         return reclaimable_sol, count
     except Exception as e:
         logger.error(f"simulate_cleanup error: {e}")
@@ -106,16 +103,13 @@ async def perform_cleanup(update: Update, keypair: Keypair):
 
         for acc in accounts:
             try:
-                info = acc["account"]["data"]["parsed"]["info"]
-                amount = info["tokenAmount"]["uiAmount"]
-                if float(amount) == 0:
-                    count += 1
+                count += 1
             except Exception:
                 continue
 
-        reclaimed = count * 0.00203928
+        reclaimed = count * 0.002
         await update.message.reply_text(
-            f"تم تنظيف {count} حساب.\n"
+            f"تم تنظيف {count} حساب توكن.\n"
             f"المبلغ المستعاد: ~{reclaimed:.6f} SOL"
         )
     except Exception as e:
