@@ -1,3 +1,4 @@
 python-telegram-bot==20.1
 solana==0.27.0
 base58
+aiohttp
