@@ -1,4 +1,3 @@
 pyTelegramBotAPI
-solana-py
+solana
 base58
-requests
