@@ -8,7 +8,7 @@ import logging
 
 logging.basicConfig(level=logging.INFO)
 
-BOT_TOKEN = 'YOUR_BOT_TOKEN'
+BOT_TOKEN = 'TELEGRAM_BOT_TOKEN'
 bot = telebot.TeleBot(BOT_TOKEN)
 solana_client = Client("https://api.mainnet-beta.solana.com")
 
