@@ -1,4 +1,3 @@
-pyTelegramBotAPI==4.15.4
-solana==0.30.1
-base58==2.1.1
-requests==2.31.0
+pyTelegramBotAPI
+solana
+base58
