@@ -9,10 +9,8 @@ from solders.transaction import Transaction
 from solders.instruction import Instruction
 from solders.pubkey import Pubkey
 from solders.message import Message
-from solders.rpc.requests import SendTransaction
 from solders.rpc.config import RpcSendTransactionConfig
 from solders.system_program import close_account, CloseAccountParams
-from solders.rpc.responses import SendTransactionResp
 import base64
 import json
 
@@ -146,19 +144,22 @@ def perform_cleanup(keypair: Keypair, chat_id: int):
         bot.send_message(chat_id, "No empty accounts to close.")
         return
 
-    message = Message(instructions, payer=destination)
-    tx = Transaction.new_unsigned(message)
-    tx.sign([keypair])
-    raw_tx = base64.b64encode(tx.serialize()).decode("utf-8")
+    transaction = Transaction()
+    transaction.add(*instructions)
 
-    send_data = {
-        "jsonrpc": "2.0",
-        "id": 1,
-        "method": "sendTransaction",
-        "params": [raw_tx, {"skipPreflight": False}]
-    }
-
+    # التوقيع
+    transaction.sign([keypair])
+    
+    # إرسال المعاملة
     try:
+        raw_tx = base64.b64encode(transaction.serialize()).decode("utf-8")
+        send_data = {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "sendTransaction",
+            "params": [raw_tx, {"skipPreflight": False}]
+        }
+        
         response = requests.post(RPC_URL, json=send_data)
         result = response.json()
         if "result" in result:
