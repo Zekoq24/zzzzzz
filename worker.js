@@ -1,24 +1,38 @@
 const { workerData, parentPort } = require('worker_threads');
-const { ethers } = require('ethers');
+const ethers = require('ethers');
 
 const BATCH_SIZE = workerData.batchSize;
 const seen = new Set();
+const DEFAULT_PATH = "m/44'/60'/0'/0/0";
 
 function generateBatch() {
   const wallets = [];
+
   for (let i = 0; i < BATCH_SIZE; i++) {
     const words = Array.from({ length: 12 }, () =>
       ethers.wordlists.en.getWord(Math.floor(Math.random() * 2048))
     );
-    const mnemonic = words.join(' ');
-    if (!ethers.utils.isValidMnemonic(mnemonic) || seen.has(mnemonic)) continue;
-    seen.add(mnemonic);
+    const phrase = words.join(' ');
+    if (seen.has(phrase)) continue;
 
-    const hdNode = ethers.utils.HDNode.fromMnemonic(mnemonic, '')
-      .derivePath(ethers.utils.defaultPath);
+    let isValid = false;
+    try {
+      isValid = ethers.Mnemonic.isValidMnemonic(phrase);
+    } catch (_) {
+      continue;
+    }
+    if (!isValid) continue;
 
-    wallets.push({ mnemonic, address: hdNode.address, privateKey: hdNode.privateKey });
+    seen.add(phrase);
+
+    try {
+      const wallet = ethers.HDNodeWallet.fromPhrase(phrase, '', DEFAULT_PATH);
+      wallets.push({ mnemonic: phrase, address: wallet.address, privateKey: wallet.privateKey });
+    } catch (_) {
+      continue;
+    }
   }
+
   parentPort.postMessage(wallets);
 }
 

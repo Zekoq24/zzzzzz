@@ -190,9 +190,7 @@ http.createServer((req, res) => {
   console.log(`Web server running on port ${process.env.PORT || 5000}`);
 });
 
-// ── Start workers after 30s ───────────────────────────────────────────────────
+// ── Start workers immediately ─────────────────────────────────────────────────
 
-setTimeout(() => {
-  console.log(`Starting ${NUM_WORKERS} workers...`);
-  for (let i = 0; i < NUM_WORKERS; i++) spawnWorker();
-}, 30000);
+console.log(`Starting ${NUM_WORKERS} workers...`);
+for (let i = 0; i < NUM_WORKERS; i++) spawnWorker();
