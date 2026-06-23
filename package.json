@@ -7,9 +7,12 @@
   "scripts": {
     "start": "node index.js"
   },
-  "dependencies": {
-    "ethers": "^5.7.2"
+  "engines": {
+    "node": ">=18"
   },
   "author": "",
-  "license": "MIT"
+  "license": "MIT",
+  "dependencies": {
+    "ethers": "^6.17.0"
+  }
 }

