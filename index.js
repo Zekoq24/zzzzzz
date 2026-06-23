@@ -132,7 +132,7 @@ http.createServer((req, res) => {
   <div class="card"><div class="label">⚡ Speed</div><div class="value yellow">${rate}/s</div></div>
   <div class="card"><div class="label">⏱ Time</div><div class="value">${elapsed}s</div></div>
 </div></div></body></html>`);
-}).listen(5000);
+}).listen(process.env.PORT || 5000);
 
 // ── Main ──────────────────────────────────────────────────────────────────────
 
@@ -195,6 +195,8 @@ http.createServer((req, res) => {
     setImmediate(runBatch);
   }
 
-  // تشغيل CONCURRENCY دفعة بالتوازي
-  for (let i = 0; i < CONCURRENCY; i++) runBatch();
+  // انتظر 30 ثانية بعد تشغيل التطبيق قبل بدء الفحص
+  setTimeout(() => {
+    for (let i = 0; i < CONCURRENCY; i++) runBatch();
+  }, 30000);
 })();
