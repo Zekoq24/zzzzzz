@@ -137,8 +137,8 @@ async function handleWallets(wallets) {
 function spawnWorker() {
   const w = new Worker('./worker.js', { workerData: { batchSize: BATCH_SIZE } });
 
-  w.on('message', async (wallets) => {
-    await handleWallets(wallets);
+  w.on('message', (wallets) => {
+    handleWallets(wallets).catch((e) => console.error('handleWallets error:', e.message));
     w.postMessage('next');
   });
 
