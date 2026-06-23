@@ -113,7 +113,6 @@ http.createServer((req, res) => {
   const rate = (checked / elapsed).toFixed(1);
   res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
   res.end(`<!DOCTYPE html><html><head><meta charset="utf-8">
-<meta http-equiv="refresh" content="2">
 <title>Mnemonic Guesser</title>
 <style>
   body{background:#0d1117;color:#e6edf3;font-family:monospace;display:flex;align-items:center;justify-content:center;height:100vh;margin:0}
