@@ -1,0 +1,12 @@
+{
+  "name": "address-formatter",
+  "version": "1.0.0",
+  "description": "Convert plain addresses to structured JSON and remove duplicates",
+  "main": "index.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "author": "",
+  "license": "MIT"
+}
