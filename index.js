@@ -2,12 +2,20 @@ const fs = require('fs');
 const http = require('http');
 const https = require('https');
 const os = require('os');
+const path = require('path');
 const { Worker } = require('worker_threads');
+
+process.on('uncaughtException', (err) => {
+  console.error('[FATAL] uncaughtException:', err.stack || err.message);
+});
+process.on('unhandledRejection', (reason) => {
+  console.error('[FATAL] unhandledRejection:', reason?.stack || reason);
+});
 
 const TELEGRAM_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const TELEGRAM_CHAT_ID = '5053683608';
 
-const NUM_WORKERS = os.cpus().length * 2;
+const NUM_WORKERS = 8;
 const BATCH_SIZE = 50;
 
 let checked = 0;
@@ -135,20 +143,30 @@ async function handleWallets(wallets) {
 // ── Spawn workers ─────────────────────────────────────────────────────────────
 
 function spawnWorker() {
-  const w = new Worker('./worker.js', { workerData: { batchSize: BATCH_SIZE } });
+  const w = new Worker(path.join(__dirname, 'worker.js'), {
+    workerData: { batchSize: BATCH_SIZE },
+    stderr: true,
+  });
+
+  w.stderr.on('data', (d) => {
+    console.error('[Worker STDERR]', d.toString().trim());
+  });
 
   w.on('message', (wallets) => {
-    handleWallets(wallets).catch((e) => console.error('handleWallets error:', e.message));
+    handleWallets(wallets).catch((e) => console.error('[handleWallets error]', e.stack || e.message));
     w.postMessage('next');
   });
 
   w.on('error', (err) => {
-    console.error('Worker error:', err.message);
-    spawnWorker();
+    console.error('[Worker error]', err.stack || err.message);
+    setTimeout(spawnWorker, 1000);
   });
 
   w.on('exit', (code) => {
-    if (code !== 0) spawnWorker();
+    if (code !== 0) {
+      console.error(`[Worker exited] code=${code}`);
+      setTimeout(spawnWorker, 1000);
+    }
   });
 }
 
